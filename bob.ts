@@ -1,32 +1,36 @@
 import * as bitcoin from "bitcoinjs-lib";
-import BIP32Factory from "bip32";
+import * as bip32 from "bip32";
 import * as bip39 from "bip39";
 import * as ecc from "tiny-secp256k1";
 import { regtestUtils } from "./_regtest";
-import { tapTreeToList, toXOnly } from "bitcoinjs-lib/src/psbt/bip371";
+import { toXOnly } from "bitcoinjs-lib/src/psbt/bip371";
 import * as psbtUtils from "bitcoinjs-lib/src/psbt/psbtutils";
-import coininfo from "coininfo";
+import { ECPairFactory } from "ecpair";
+const ECPair = ECPairFactory(ecc);
 
 const rng = require("randombytes");
 const regtest = regtestUtils.network;
 bitcoin.initEccLib(ecc);
-const bip32 = BIP32Factory(ecc);
 const { witnessStackToScriptWitness } = psbtUtils;
 
 const txs: Map<string, bitcoin.Transaction> = new Map();
 
 async function main() {
-  const internalKey = bip32.fromSeed(
-    Buffer.from(
-      "cdd0f23a07581c855b4fdf9abbbe07bab30cfc87012d5b4a2399704dbcb371dc82a978aa177320ae881f894b790de5e29f3965f67b64d8c9e324f6eb913fe669",
-      "hex"
-    ),
-    regtest
-  );
+  const network = bitcoin.networks.testnet;
+  const seed = await bip39.mnemonicToSeed("YOUR SEED PHRASE", "");
+  const derivation = "m/84'/1'/0'/0/0";
+  const root = bip32.fromSeed(seed);
+  const master = root.derivePath(derivation);
+
+  const internalKey = ECPair.fromWIF(master.toWIF());
+  const { address: p2wpkhAddress } = bitcoin.payments.p2wpkh({
+    pubkey: internalKey.publicKey,
+    network,
+  });
+  console.log("🚀 ~ main ~ p2wpkhAddress:", p2wpkhAddress);
+
+  const feeRate = 100;
   const amount = 546;
-  const postage = 1000;
-  const feeRate = new bitcoin.Psbt({ network: regtest }).getFeeRate();
-  console.log("🚀 ~ main ~ feeRate:", feeRate);
 
   // ====== create commit data =================
   const maker = Buffer.from("ord");
@@ -35,7 +39,7 @@ async function main() {
     JSON.stringify({
       p: "brc-20",
       op: "deploy",
-      tick: "trac",
+      tick: "tyler",
       max: "21000000",
       lim: "1000",
     })
@@ -61,7 +65,7 @@ async function main() {
     internalPubkey: toXOnly(internalKey.publicKey),
     scriptTree,
     redeem: scriptTree,
-    network: regtest,
+    network,
   });
 
   const cblock = scriptTaproot.witness?.[scriptTaproot.witness.length - 1];
@@ -83,23 +87,22 @@ async function main() {
       };
     };
   };
-  const psbt = new bitcoin.Psbt({ network: regtest });
+  const psbt = new bitcoin.Psbt({ network });
   psbt.addInput({
     hash: Buffer.alloc(32, 0),
     index: 0,
     witnessUtxo: {
-      value: postage,
+      value: amount,
       script: scriptTaproot.output!,
     },
     tapLeafScript: [tapLeafScript],
   });
 
-  psbt.addOutput({ value: postage, address: scriptTaproot.address! });
+  psbt.addOutput({ value: amount, address: scriptTaproot.address! });
   psbt.signInput(0, internalKey);
   psbt.finalizeInput(0, customFinalizer());
   const tx = psbt.extractTransaction();
   const revealTxSize = tx.virtualSize();
-  console.log("🚀 ~ main ~ revealTxSize:", tx);
   console.log("🚀 ~ main ~ revealTxSize:", revealTxSize);
   const revealFee = revealTxSize * feeRate;
   console.log("🚀 ~ main ~ revealFee:", revealFee);
@@ -109,27 +112,50 @@ async function main() {
     toAddress: string,
     amount: number
   ): Promise<string> => {
-    const tx = await regtestUtils.faucetComplex(
-      bitcoin.address.toOutputScript(toAddress, regtest),
-      amount
-    );
-    const txId = tx.txId;
-    const fetchTx = await regtestUtils.fetch(txId);
+    console.log("🚀 ~ main ~ amount:", amount);
+    console.log("🚀 ~ main ~ toAddress:", toAddress);
+    // const tx = await regtestUtils.faucetComplex(
+    //   bitcoin.address.toOutputScript(toAddress, network),
+    //   amount
+    // );
+    // const txId = tx.txId;
+    // const fetchTx = await regtestUtils.fetch(txId);
     // const tx = new bitcoin.Transaction();
-    // tx.addInput(Buffer.alloc(32, 0), 0);
-    // tx.addOutput(bitcoin.address.toOutputScript(toAddress, regtest), amount);
-    // const txId = tx.getId();
-    txs.set(txId, bitcoin.Transaction.fromHex(fetchTx.txHex));
+    // tx.addInput(
+    //   Buffer.from(
+    //     "ef48e417a90accc540387c6339d6065976f94db772a91b5dfdb9d5de177224ab",
+    //     "hex"
+    //   ),
+    //   0
+    // );
+    // tx.addOutput(bitcoin.address.toOutputScript(toAddress, network), amount);
+    const pbstCommit = new bitcoin.Psbt({ network });
+    pbstCommit.addInput({
+      hash: "ef48e417a90accc540387c6339d6065976f94db772a91b5dfdb9d5de177224ab", // UTXO hash
+      index: 0,
+      // UTXO tx hex
+      nonWitnessUtxo: Buffer.from(
+        "02000000000101ee9dc17fc8602d9dfc06c073123080bb7fe6a5b057855127488c9a46a84e65680000000000fdffffff020b5e0000000000001600140670e00dce47679060fdc81d1294cc8fdd86ec22b8d8d40f00000000160014b9f3485c06b1cc7d514d308c5e609697fa8a3d6c02473044022027d8d7e9139cad7c9d8417cafdfb367035149e1d7080490f2c013c2a54566175022079fc7c873e2216b253daae3a96587b76482de12a2f6a8f145726a1e034648910012103d5effe14869d0af1ea89600c9b0ebc871bdab6d17ac81aff1c776beef94efdbfcf0e2b00",
+        "hex"
+      ),
+    });
+    pbstCommit.addOutput({ address: toAddress, value: amount });
+    pbstCommit.signInput(0, internalKey);
+    pbstCommit.finalizeAllInputs();
+    const tx = pbstCommit.extractTransaction();
+    console.log("🚀 ~ main ~ commitTx:", tx.toHex());
+    const txId = tx.getId();
+    txs.set(txId, tx);
     return txId;
   };
 
-  const commitTxAmount = revealFee * postage > 0 ? revealFee * postage : amount + 155;
+  const commitTxAmount = revealFee > 0 ? revealFee + amount : amount + 155;
   console.log("🚀 ~ main ~ commitTxAmount:", commitTxAmount);
   const commitAddress = scriptTaproot.address!;
   const commitTxId = await sendToAddress(commitAddress, commitTxAmount);
   const commitTx = txs.get(commitTxId)!;
 
-  const scriptPubKey = bitcoin.address.toOutputScript(commitAddress, regtest);
+  const scriptPubKey = bitcoin.address.toOutputScript(commitAddress, network);
   const commitUtxoIndex = commitTx.outs.findIndex((out) =>
     out.script.equals(scriptPubKey)
   );
@@ -140,7 +166,7 @@ async function main() {
   };
 
   // =============================CREATE REVEAL TX====================================
-  const revealPsbt = new bitcoin.Psbt({ network: regtest });
+  const revealPsbt = new bitcoin.Psbt({ network });
   revealPsbt.addInput({
     hash: commitTxResult.tx.getId(),
     index: commitTxResult.outputIndex,
@@ -160,15 +186,11 @@ async function main() {
   revealPsbt.signInput(0, internalKey);
   revealPsbt.finalizeInput(0, customFinalizer());
   const revealTx = revealPsbt.extractTransaction();
-  console.log(
-    "🚀 ~ main ~ revealTx:",
-    revealTx.ins[0].witness[1].toString("hex")
-  );
-  console.log("🚀 ~ main ~ revealTx:", revealTx);
-  regtestUtils.broadcast(revealTx.toBuffer().toString("hex"));
-  const executedRevealTx = await regtestUtils.fetch(revealTx.getId());
-  console.log("🚀 ~ main ~ executedRevealTx:", executedRevealTx.txHex)
-  console.log("🚀 ~ main ~ executedRevealTx:", executedRevealTx)
+  console.log("🚀 ~ main ~ revealTx:", revealTx.toHex());
+  // regtestUtils.broadcast(revealTx.toBuffer().toString("hex"));
+  // const executedRevealTx = await regtestUtils.fetch(revealTx.getId());
+  // console.log("🚀 ~ main ~ executedRevealTx:", executedRevealTx.txHex);
+  // console.log("🚀 ~ main ~ executedRevealTx:", executedRevealTx);
 }
 
 main();
